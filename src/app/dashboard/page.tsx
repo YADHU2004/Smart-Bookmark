@@ -13,53 +13,54 @@ export default function Dashboard() {
 
   useEffect(() => {
 
-    let channel: any
+  let channel: any
 
-    const initialize = async () => {
+  const initialize = async () => {
 
-      // get logged in user
-      const { data, error } = await supabase.auth.getUser()
+    // Get session instead of getUser
+    const { data: sessionData } = await supabase.auth.getSession()
 
-      if (error || !data.user) {
-        console.error("User not found")
-        return
-      }
-
-      const currentUser = data.user
-      setUser(currentUser)
-
-      // fetch bookmarks initially
-      await fetchBookmarks(currentUser.id)
-
-      // realtime subscription (filtered by user)
-      channel = supabase
-        .channel(`user-bookmarks-${currentUser.id}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "bookmarks",
-            filter: `user_id=eq.${currentUser.id}`
-          },
-          () => {
-            fetchBookmarks(currentUser.id)
-          }
-        )
-        .subscribe()
-
-      setLoading(false)
+    if (!sessionData.session) {
+      // redirect if not logged in
+      window.location.replace("/")
+      return
     }
 
-    initialize()
+    const currentUser = sessionData.session.user
 
-    return () => {
-      if (channel) {
-        supabase.removeChannel(channel)
-      }
-    }
+    setUser(currentUser)
 
-  }, [])
+    // fetch bookmarks
+    await fetchBookmarks(currentUser.id)
+
+    // realtime subscription
+    channel = supabase
+      .channel(`user-bookmarks-${currentUser.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "bookmarks",
+          filter: `user_id=eq.${currentUser.id}`
+        },
+        () => {
+          fetchBookmarks(currentUser.id)
+        }
+      )
+      .subscribe()
+
+    setLoading(false)
+  }
+
+  initialize()
+
+  return () => {
+    if (channel) supabase.removeChannel(channel)
+  }
+
+}, [])
+
 
   async function fetchBookmarks(userId: string) {
 
@@ -74,36 +75,65 @@ export default function Dashboard() {
     }
   }
 
-  async function addBookmark() {
+ async function addBookmark() {
 
-    if (!title || !url || !user) return
+  if (!title || !url || !user) return
 
-    const { error } = await supabase
-      .from("bookmarks")
-      .insert({
-        title: title,
-        url: url,
-        user_id: user.id
-      })
-
-    if (!error) {
-      setTitle("")
-      setUrl("")
-    }
+  const newBookmark = {
+    id: crypto.randomUUID(),
+    title,
+    url,
+    user_id: user.id,
+    created_at: new Date().toISOString()
   }
 
-  async function deleteBookmark(id: string) {
+  // Instant UI update
+  setBookmarks(prev => [newBookmark, ...prev])
 
-    await supabase
-      .from("bookmarks")
-      .delete()
-      .eq("id", id)
-  }
+  setTitle("")
+  setUrl("")
 
-  async function logout() {
-    await supabase.auth.signOut()
-    window.location.href = "/"
+  // Save to Supabase in background
+  const { error } = await supabase
+    .from("bookmarks")
+    .insert({
+      title,
+      url,
+      user_id: user.id
+    })
+
+  if (error) {
+    console.error(error)
+    fetchBookmarks(user.id) // fallback sync
   }
+}
+
+
+async function deleteBookmark(id: string) {
+
+  // Instant UI update
+  setBookmarks(prev => prev.filter(b => b.id !== id))
+
+  // Delete from Supabase in background
+  const { error } = await supabase
+    .from("bookmarks")
+    .delete()
+    .eq("id", id)
+
+  if (error) {
+    console.error(error)
+    fetchBookmarks(user.id) // fallback sync
+  }
+}
+
+
+async function logout() {
+
+  window.location.replace("/")
+
+  await supabase.auth.signOut()
+
+}
 
   if (loading) {
     return (
